@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minireranker"
+version = "0.1.0"
+description = "Transformers-based multimodal reranking with visual token pruning"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+dependencies = [
+  "torch==2.8.0", "transformers==4.57.6", "accelerate==1.13.0",
+  "qwen-vl-utils==0.0.14", "Pillow>=10.0", "scipy>=1.10",
+  "numpy>=1.24", "typing-extensions>=4.10", "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+train = ["datasets==4.7.0", "pyarrow==23.0.1", "peft==0.18.1", "deepspeed==0.18.8"]
+data = ["pyarrow==23.0.1"]
+eval = ["datasets==4.7.0", "pyarrow==23.0.1", "PyYAML>=6.0"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+minireranker-train = "minireranker.train:train"
+minireranker-eval = "minireranker.evaluation:main"
+minireranker-precompute = "minireranker.precompute_token_ranks:main"
+
+[tool.setuptools.packages.find]
+include = ["minireranker*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

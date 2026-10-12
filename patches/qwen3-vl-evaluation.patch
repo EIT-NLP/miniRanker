@@ -1,0 +1,89 @@
+--- a/src/evaluation/mmeb_v2/eval_reranker.py
++++ b/src/evaluation/mmeb_v2/eval_reranker.py
+@@ -23,6 +23,10 @@
+ 
+ from ...models.qwen3_vl_reranker import Qwen3VLReranker
+ 
++from minireranker.evaluation_utils import shuffled_candidates, rank_candidates, metadata_matches
++MINIRERANKER_SHUFFLE_SEED = 42
++MINIRERANKER_METADATA = {"protocol": "raw-logits-shuffled-original-topk-v1", "shuffle_seed": 42}
++
+ logger = logging.getLogger(__name__)
+ logging.basicConfig(level=logging.INFO)
+ 
+@@ -94,12 +98,15 @@
+         gt_dids = gt_dids if isinstance(gt_dids, list) else [gt_dids]
+         rel_scores = query_item["dataset_infos"].get("rel_scores", None)
+ 
+-        topk_ids = query_item["topk_ids"]
++        original_topk_ids = list(query_item["topk_ids"])
++        global_query_idx = int(query_item["minireranker_query_index"])
++        topk_ids = shuffled_candidates(original_topk_ids, global_query_idx, MINIRERANKER_SHUFFLE_SEED)
+ 
+         pred_dict = {
+             "label": gt_dids,
+             "rel_scores": rel_scores,
+-            "retrieved": topk_ids,
++            "retrieved": original_topk_ids,
++            "query_idx": global_query_idx,
+             "prediction": [],
+             "rerank_scores": [],
+         }
+@@ -138,9 +145,7 @@
+             rerank_scores.extend(batch_scores)
+ 
+         # sort by reranker score desc
+-        order = np.argsort(-np.asarray(rerank_scores)).tolist()
+-        reranked_ids = [valid_cand_ids[i] for i in order]
+-        reranked_scores = [rerank_scores[i] for i in order]
++        reranked_ids, reranked_scores = rank_candidates(valid_cand_ids, rerank_scores)
+ 
+         pred_dict["prediction"] = reranked_ids
+         pred_dict["rerank_scores"] = reranked_scores
+@@ -155,7 +160,8 @@
+                 for node_pred_dicts in all_pred_dicts 
+                     for pred_dict in node_pred_dicts
+             ]
+-            return final_pred_dicts[:full_dataset_len]
++            by_query = {item["query_idx"]: item for item in final_pred_dicts}
++            return [by_query[i] for i in range(full_dataset_len)]
+         else:
+             return None
+     else:
+@@ -220,7 +226,7 @@
+         # 0. Skip if already exists and valid
+         score_path = os.path.join(output_dir, f"{dataset_name}_rerank_score.json")
+         pred_path = os.path.join(output_dir, f"{dataset_name}_rerank_pred.jsonl")
+-        if os.path.exists(score_path) and os.path.exists(pred_path):
++        if metadata_matches(score_path, MINIRERANKER_METADATA) and os.path.exists(pred_path):
+             try:
+                 with open(score_path, "r") as f:
+                     sd = json.load(f)
+@@ -253,6 +259,8 @@
+             )
+             full_eval_cand_dataset = generate_cand_dataset(full_eval_qry_dataset, corpus)
+             full_eval_qry_dataset = full_eval_qry_dataset.add_column("topk_ids", topk_ids)
++            full_eval_qry_dataset = full_eval_qry_dataset.add_column(
++                "minireranker_query_index", list(range(len(full_eval_qry_dataset))))
+             cand_lookup = build_corpus_lookup(full_eval_cand_dataset)
+ 
+             if dist.is_initialized():
+@@ -284,6 +292,7 @@
+             score_dict["num_data"] = len(pred_dicts)
+             score_dict["topk"] = model_args.topk
+             score_dict["reranker_model"] = model_args.model_name_or_path
++            score_dict["minireranker_metadata"] = MINIRERANKER_METADATA
+ 
+             with open(score_path, "w") as f:
+                 json.dump(score_dict, f, indent=4, ensure_ascii=False)
+--- a/src/models/qwen3_vl_reranker.py
++++ b/src/models/qwen3_vl_reranker.py
+@@ -133,7 +133,7 @@
+     def compute_scores(self, inputs: Dict) -> List[float]:
+         batch_scores = self.model(**inputs).last_hidden_state[:, -1]
+         scores = self.score_linear(batch_scores)
+-        scores = torch.sigmoid(scores).squeeze(-1).cpu().detach().tolist()
++        scores = scores.squeeze(-1).float().cpu().detach().tolist()
+         return scores
+ 
+     def truncate_tokens_optimized(
